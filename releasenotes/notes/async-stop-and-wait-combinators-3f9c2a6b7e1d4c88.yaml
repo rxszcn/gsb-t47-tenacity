@@ -1,0 +1,14 @@
+---
+features:
+  - |
+    Stop and wait strategies now support async members. ``stop_any``,
+    ``stop_all`` and the ``|``/``&`` operators await coroutine-function stop
+    conditions instead of truthiness-testing the un-awaited coroutine object,
+    and ``wait_combine`` and the ``+`` operator (including ``sum()``) await
+    async wait members and sum their results. When any member is a coroutine
+    function, the synchronous constructor/operator transparently produces the
+    awaitable combinator; purely synchronous combinations are unchanged.
+  - |
+    ``tenacity.asyncio`` now exports ``stop_any``, ``stop_all``,
+    ``wait_combine``, along with the ``async_stop_base``, ``async_wait_base``
+    base classes and the ``AsyncStopBaseT``/``AsyncWaitBaseT`` type aliases.

@@ -281,6 +281,177 @@ class TestAsyncEnabled(unittest.TestCase):
         assert call_count == 1
 
 
+class TestAsyncStopCombinators(unittest.TestCase):
+    @staticmethod
+    def _async_stop_after(
+        attempt: int,
+    ) -> Callable[[RetryCallState], Coroutine[Any, Any, bool]]:
+        async def stop(retry_state: RetryCallState) -> bool:
+            return retry_state.attempt_number >= attempt
+
+        return stop
+
+    def test_namespace_exports(self) -> None:
+        for name in ("stop_any", "stop_all", "async_stop_base"):
+            assert hasattr(tasyncio, name)
+
+    @asynctest
+    async def test_async_stop_any(self) -> None:
+        state = RetryCallState(retry_object=None, fn=None, args=(), kwargs={})
+
+        stop = tasyncio.stop_any(self._async_stop_after(4), stop_after_attempt(99))
+        state.attempt_number = 3
+        assert await stop(state) is False
+        state.attempt_number = 4
+        assert await stop(state) is True
+
+    @asynctest
+    async def test_async_stop_any_short_circuits(self) -> None:
+        state = RetryCallState(retry_object=None, fn=None, args=(), kwargs={})
+        state.attempt_number = 4
+        evaluated: list[bool] = []
+
+        async def boom(retry_state: RetryCallState) -> bool:
+            evaluated.append(True)
+            raise AssertionError("later member must not be evaluated")
+
+        assert await tasyncio.stop_any(self._async_stop_after(4), boom)(state)
+        assert evaluated == []
+
+    @asynctest
+    async def test_async_stop_all(self) -> None:
+        state = RetryCallState(retry_object=None, fn=None, args=(), kwargs={})
+
+        stop = tasyncio.stop_all(self._async_stop_after(4), stop_after_attempt(99))
+        state.attempt_number = 4
+        assert await stop(state) is False
+        state.attempt_number = 99
+        assert await stop(state) is True
+
+    @asynctest
+    async def test_async_stop_all_short_circuits(self) -> None:
+        state = RetryCallState(retry_object=None, fn=None, args=(), kwargs={})
+        state.attempt_number = 1
+        evaluated: list[bool] = []
+
+        async def boom(retry_state: RetryCallState) -> bool:
+            evaluated.append(True)
+            raise AssertionError("later member must not be evaluated")
+
+        assert await tasyncio.stop_all(self._async_stop_after(4), boom)(state) is False
+        assert evaluated == []
+
+    @asynctest
+    async def test_sync_constructors_upgrade_for_async_member(self) -> None:
+        assert isinstance(
+            tenacity.stop_any(self._async_stop_after(4)),
+            tasyncio.stop_any,
+        )
+        assert isinstance(
+            tenacity.stop_all(self._async_stop_after(4)),
+            tasyncio.stop_all,
+        )
+        # Sync-only combinations keep the plain synchronous type.
+        assert type(tenacity.stop_any(stop_after_attempt(1))) is tenacity.stop_any
+        assert type(tenacity.stop_all(stop_after_attempt(1))) is tenacity.stop_all
+
+    @asynctest
+    async def test_operators_upgrade_for_async_combinator(self) -> None:
+        combined = stop_after_attempt(99) | self._async_stop_after(4)
+        assert isinstance(combined, tasyncio.stop_any)
+        combined = stop_after_attempt(99) & self._async_stop_after(4)
+        assert isinstance(combined, tasyncio.stop_all)
+
+    @asynctest
+    async def test_async_predicate_matches_bare_predicate(self) -> None:
+        # The whole point: wrapped in a combinator, the predicate must drive
+        # the same number of attempts as passing it in bare.
+        async def run(stop: object) -> int:
+            attempts = 0
+
+            async def flaky() -> None:
+                nonlocal attempts
+                attempts += 1
+                raise ValueError("x")
+
+            retrying = AsyncRetrying(
+                stop=stop,  # type: ignore[arg-type]
+                wait=tenacity.wait_none(),
+                sleep=lambda seconds: asyncio.sleep(0),
+                reraise=True,
+            )
+            with pytest.raises(ValueError):
+                await retrying(flaky)
+            return attempts
+
+        predicate = self._async_stop_after(4)
+        for stop in (
+            predicate,
+            tenacity.stop_any(predicate),
+            tenacity.stop_any(predicate, stop_after_attempt(99)),
+            tenacity.stop_any(predicate, tenacity.stop_never),
+        ):
+            assert await run(stop) == 4
+
+
+class TestAsyncWaitCombinators(unittest.TestCase):
+    @staticmethod
+    async def _wait_15(retry_state: RetryCallState) -> float:
+        return 1.5
+
+    def test_namespace_exports(self) -> None:
+        assert hasattr(tasyncio, "wait_combine")
+        assert hasattr(tasyncio, "async_wait_base")
+
+    @asynctest
+    async def test_async_wait_combine_sums_members(self) -> None:
+        state = RetryCallState(retry_object=None, fn=None, args=(), kwargs={})
+        wait = tasyncio.wait_combine(wait_fixed(1), self._wait_15)
+        assert await wait(state) == 2.5
+
+    @asynctest
+    async def test_sync_constructor_and_plus_upgrade(self) -> None:
+        state = RetryCallState(retry_object=None, fn=None, args=(), kwargs={})
+        combined = tenacity.wait_combine(wait_fixed(1), self._wait_15)
+        assert isinstance(combined, tasyncio.wait_combine)
+        assert await combined(state) == 2.5
+
+        added = wait_fixed(1) + self._wait_15
+        assert isinstance(added, tasyncio.wait_combine)
+        assert await added(state) == 2.5
+
+        reversed_add = self._wait_15 + wait_fixed(1)
+        assert await reversed_add(state) == 2.5
+
+        summed = sum([wait_fixed(1), self._wait_15])
+        assert await summed(state) == 2.5
+
+        # Sync-only stays synchronous and directly callable.
+        plain = tenacity.wait_combine(wait_fixed(1), wait_fixed(2))
+        assert type(plain) is tenacity.wait_combine
+        assert plain(state) == 3.0
+
+    @asynctest
+    async def test_async_wait_combine_inside_retrying(self) -> None:
+        slept: list[float] = []
+        calls = 0
+
+        async def flaky() -> str:
+            nonlocal calls
+            calls += 1
+            if calls < 3:
+                raise ValueError("x")
+            return "ok"
+
+        retrying = AsyncRetrying(
+            stop=stop_after_attempt(3),
+            wait=wait_fixed(1) + self._wait_15,
+            sleep=lambda seconds: slept.append(seconds) or asyncio.sleep(0),
+        )
+        assert await retrying(flaky) == "ok"
+        assert slept == [2.5, 2.5]
+
+
 @unittest.skipIf(not have_trio, "trio not installed")
 class TestTrio(unittest.TestCase):
     def test_trio_basic(self) -> None:

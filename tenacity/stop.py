@@ -45,6 +45,17 @@ StopBaseT = stop_base | typing.Callable[["RetryCallState"], bool]
 class stop_any(stop_base):
     """Stop if any of the stop condition is valid."""
 
+    def __new__(cls, *stops: "StopBaseT") -> "stop_any":  # noqa: PYI034
+        # An async condition (a coroutine callable, or a combinator built from
+        # one) can only be evaluated by awaiting it. Upgrade to the async
+        # combinator so the coroutine is awaited rather than truthiness-tested
+        # as a coroutine object. `cls is stop_any` leaves subclasses alone.
+        if cls is stop_any and any(_utils.is_coroutine_callable(s) for s in stops):
+            from tenacity.asyncio import stop as _astop
+
+            return typing.cast("stop_any", _astop.stop_any(*stops))
+        return super().__new__(cls)
+
     def __init__(self, *stops: stop_base) -> None:
         self.stops = stops
 
@@ -55,6 +66,14 @@ class stop_any(stop_base):
 
 class stop_all(stop_base):
     """Stop if all the stop conditions are valid."""
+
+    def __new__(cls, *stops: "StopBaseT") -> "stop_all":  # noqa: PYI034
+        # See stop_any.__new__: an async member upgrades the combinator.
+        if cls is stop_all and any(_utils.is_coroutine_callable(s) for s in stops):
+            from tenacity.asyncio import stop as _astop
+
+            return typing.cast("stop_all", _astop.stop_all(*stops))
+        return super().__new__(cls)
 
     def __init__(self, *stops: stop_base) -> None:
         self.stops = stops

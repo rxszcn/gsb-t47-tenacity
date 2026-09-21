@@ -43,6 +43,21 @@ from .retry import (
     retry_if_result,
 )
 
+# Import all built-in stop strategies for easier usage.
+from .stop import (
+    AsyncStopBaseT,
+    async_stop_base,
+    stop_all,
+    stop_any,
+)
+
+# Import all built-in wait strategies for easier usage.
+from .wait import (
+    AsyncWaitBaseT,
+    async_wait_base,
+    wait_combine,
+)
+
 if t.TYPE_CHECKING:
     from tenacity.retry import RetryBaseT as SyncRetryBaseT
     from tenacity.stop import StopBaseT
@@ -246,9 +261,16 @@ class AsyncRetrying(BaseRetrying):
 
 __all__ = [
     "AsyncRetrying",
+    "AsyncStopBaseT",
+    "AsyncWaitBaseT",
     "WrappedFn",
+    "async_stop_base",
+    "async_wait_base",
     "retry_all",
     "retry_any",
     "retry_if_exception",
     "retry_if_result",
+    "stop_all",
+    "stop_any",
+    "wait_combine",
 ]

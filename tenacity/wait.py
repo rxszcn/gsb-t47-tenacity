@@ -95,6 +95,19 @@ class wait_random(wait_base):
 class wait_combine(wait_base):
     """Combine several waiting strategies."""
 
+    def __new__(cls, *strategies: "WaitBaseT") -> "wait_combine":  # noqa: PYI034
+        # An async wait member can only be evaluated by awaiting it. Upgrade
+        # to the async combinator so members are awaited before summing
+        # instead of raising on `float + coroutine`. `cls is wait_combine`
+        # leaves subclasses alone.
+        if cls is wait_combine and any(
+            _utils.is_coroutine_callable(w) for w in strategies
+        ):
+            from tenacity.asyncio import wait as _await
+
+            return typing.cast("wait_combine", _await.wait_combine(*strategies))
+        return super().__new__(cls)
+
     def __init__(self, *strategies: "WaitBaseT") -> None:
         self.wait_funcs = strategies
 
