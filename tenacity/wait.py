@@ -24,7 +24,14 @@ from tenacity import _utils
 from tenacity._utils import override
 
 if typing.TYPE_CHECKING:
+    import sys
+
     from tenacity import RetryCallState
+
+    if sys.version_info >= (3, 11):
+        from typing import Self
+    else:
+        from typing_extensions import Self
 
 
 class wait_base(abc.ABC):
@@ -95,6 +102,21 @@ class wait_random(wait_base):
 class wait_combine(wait_base):
     """Combine several waiting strategies."""
 
+    def __new__(
+        cls,
+        *strategies: "WaitBaseT | typing.Callable[[RetryCallState], typing.Awaitable[float]]",
+    ) -> "Self":
+        # A coroutine wait strategy can only be awaited, never called
+        # synchronously: combining with one yields the async combinator from
+        # `tenacity.asyncio.wait`, whose `__call__` awaits every member.
+        if cls is wait_combine and any(
+            _utils.is_coroutine_callable(s) for s in strategies
+        ):
+            from tenacity.asyncio.wait import wait_combine as async_wait_combine
+
+            return async_wait_combine(*strategies)  # type: ignore[return-value]
+        return super().__new__(cls)
+
     def __init__(self, *strategies: "WaitBaseT") -> None:
         self.wait_funcs = strategies
 
@@ -122,6 +144,19 @@ class wait_chain(wait_base):
             print("Wait 1s for 3 attempts, 2s for 5 attempts and 5s "
                   "thereafter.")
     """
+
+    def __new__(
+        cls,
+        *strategies: "WaitBaseT | typing.Callable[[RetryCallState], typing.Awaitable[float]]",
+    ) -> "Self":
+        # See `wait_combine.__new__`: async members make the combinator async.
+        if cls is wait_chain and any(
+            _utils.is_coroutine_callable(s) for s in strategies
+        ):
+            from tenacity.asyncio.wait import wait_chain as async_wait_chain
+
+            return async_wait_chain(*strategies)  # type: ignore[return-value]
+        return super().__new__(cls)
 
     def __init__(self, *strategies: wait_base) -> None:
         if not strategies:

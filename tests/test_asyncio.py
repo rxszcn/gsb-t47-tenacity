@@ -40,7 +40,8 @@ from tenacity import (
     stop_after_attempt,
 )
 from tenacity import asyncio as tasyncio
-from tenacity.wait import wait_fixed
+from tenacity.stop import stop_all, stop_any, stop_never
+from tenacity.wait import wait_chain, wait_combine, wait_fixed
 
 from .test_tenacity import (
     NoIOErrorAfterCount,
@@ -57,6 +58,33 @@ def asynctest(callable_: _F) -> Callable[..., Any]:
         return asyncio.run(callable_(*a, **kw))
 
     return wrapper
+
+
+def _make_async_stop(
+    threshold: int,
+) -> Callable[[RetryCallState], Coroutine[Any, Any, bool]]:
+    async def _astop(retry_state: RetryCallState) -> bool:
+        return retry_state.attempt_number >= threshold
+
+    return _astop
+
+
+async def _run_until_stop(stop: Any) -> int:
+    attempts = 0
+
+    async def _always_fails() -> None:
+        nonlocal attempts
+        attempts += 1
+        raise ValueError("x")
+
+    retrying = AsyncRetrying(
+        stop=stop,
+        wait=tenacity.wait_none(),
+        sleep=lambda s: asyncio.sleep(0),
+    )
+    with pytest.raises(RetryError):
+        await retrying(_always_fails)
+    return attempts
 
 
 async def _async_function(thing: NoIOErrorAfterCount) -> Any:
@@ -196,6 +224,128 @@ class TestAsyncio(unittest.TestCase):
         things, attempt_nos2 = zip(*odd_thing_attempts)
         assert len(set(things)) == 1
         assert list(attempt_nos2) == [1, 2, 3]
+
+
+class TestAsyncStopCombinators(unittest.TestCase):
+    @asynctest
+    async def test_bare_async_stop(self) -> None:
+        assert await _run_until_stop(_make_async_stop(4)) == 4
+
+    @asynctest
+    async def test_stop_any_with_async_member(self) -> None:
+        assert await _run_until_stop(stop_any(_make_async_stop(4))) == 4
+
+    @asynctest
+    async def test_stop_any_with_async_and_sync_members(self) -> None:
+        stop = stop_any(_make_async_stop(4), stop_after_attempt(99))
+        assert await _run_until_stop(stop) == 4
+
+    @asynctest
+    async def test_stop_any_with_async_member_and_stop_never(self) -> None:
+        assert await _run_until_stop(stop_any(_make_async_stop(4), stop_never)) == 4
+
+    @asynctest
+    async def test_stop_all_with_async_and_sync_members(self) -> None:
+        # Both conditions must hold: the async one first fires at attempt 4,
+        # the sync one is already true by then, so this stops at 4. If the
+        # coroutine were misread as truthy it would stop at 2 instead.
+        stop = stop_all(_make_async_stop(4), stop_after_attempt(2))
+        assert await _run_until_stop(stop) == 4
+
+    @asynctest
+    async def test_stop_all_with_two_async_members(self) -> None:
+        stop = stop_all(_make_async_stop(2), _make_async_stop(4))
+        assert await _run_until_stop(stop) == 4
+
+    @asynctest
+    async def test_or_operator_with_async_member(self) -> None:
+        assert await _run_until_stop(stop_after_attempt(99) | _make_async_stop(4)) == 4
+        assert await _run_until_stop(_make_async_stop(4) | stop_after_attempt(99)) == 4
+
+    @asynctest
+    async def test_and_operator_with_async_member(self) -> None:
+        assert await _run_until_stop(stop_after_attempt(2) & _make_async_stop(4)) == 4
+        assert await _run_until_stop(_make_async_stop(4) & stop_after_attempt(2)) == 4
+
+    def test_sync_only_combinators_stay_sync(self) -> None:
+        from tenacity.stop import stop_any as sync_stop_any
+
+        stop = stop_any(stop_after_attempt(4), stop_after_attempt(99))
+        assert type(stop) is sync_stop_any
+        assert not inspect.iscoroutinefunction(stop.__call__)
+
+    def test_async_combinator_is_coroutine_callable(self) -> None:
+        stop = stop_any(_make_async_stop(4))
+        assert inspect.iscoroutinefunction(stop.__call__)
+        assert isinstance(stop, tasyncio.stop_any)
+
+    def test_async_namespace_exports_stop_and_wait(self) -> None:
+        for name in ("stop_any", "stop_all", "wait_combine", "wait_chain"):
+            assert hasattr(tasyncio, name), name
+
+
+class TestAsyncWaitCombinators(unittest.TestCase):
+    @staticmethod
+    def _make_async_wait(
+        value: float,
+    ) -> Callable[[RetryCallState], Coroutine[Any, Any, float]]:
+        async def _await_value(retry_state: RetryCallState) -> float:
+            return value
+
+        return _await_value
+
+    async def _recorded_sleeps(self, wait: Any) -> list:
+        sleeps = []
+
+        def _sleep(seconds: float) -> Coroutine[Any, Any, None]:
+            sleeps.append(seconds)
+            return asyncio.sleep(0)
+
+        calls = 0
+
+        async def _fail_twice() -> str:
+            nonlocal calls
+            calls += 1
+            if calls < 3:
+                raise ValueError("x")
+            return "ok"
+
+        retrying = AsyncRetrying(stop=stop_after_attempt(3), wait=wait, sleep=_sleep)
+        assert await retrying(_fail_twice) == "ok"
+        return sleeps
+
+    @asynctest
+    async def test_bare_async_wait(self) -> None:
+        assert await self._recorded_sleeps(self._make_async_wait(1.5)) == [1.5, 1.5]
+
+    @asynctest
+    async def test_wait_combine_with_async_member(self) -> None:
+        wait = wait_combine(wait_fixed(1), self._make_async_wait(1.5))
+        assert await self._recorded_sleeps(wait) == [2.5, 2.5]
+
+    @asynctest
+    async def test_wait_add_with_async_member(self) -> None:
+        wait = wait_fixed(1) + self._make_async_wait(1.5)
+        assert await self._recorded_sleeps(wait) == [2.5, 2.5]
+
+    @asynctest
+    async def test_wait_chain_with_async_member(self) -> None:
+        wait = wait_chain(self._make_async_wait(1.5), wait_fixed(2))
+        assert await self._recorded_sleeps(wait) == [1.5, 2.0]
+
+    @asynctest
+    async def test_async_wait_base_add(self) -> None:
+        class _async_wait(tasyncio.async_wait_base):
+            async def __call__(self, retry_state: RetryCallState) -> float:
+                return 1.5
+
+        wait = _async_wait() + wait_fixed(1)
+        assert await self._recorded_sleeps(wait) == [2.5, 2.5]
+
+    def test_sync_only_wait_combine_stays_sync(self) -> None:
+        wait = wait_combine(wait_fixed(1), wait_fixed(2))
+        assert not inspect.iscoroutinefunction(wait.__call__)
+        assert type(wait) is tenacity.wait.wait_combine
 
 
 class TestAsyncEnabled(unittest.TestCase):

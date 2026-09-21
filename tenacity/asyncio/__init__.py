@@ -43,10 +43,26 @@ from .retry import (
     retry_if_result,
 )
 
+# Import all built-in stop strategies for easier usage.
+from .stop import (
+    StopBaseT,
+    async_stop_base,
+    stop_all,
+    stop_any,
+)
+
+# Import all built-in wait strategies for easier usage.
+from .wait import (
+    WaitBaseT,
+    async_wait_base,
+    wait_chain,
+    wait_combine,
+)
+
 if t.TYPE_CHECKING:
     from tenacity.retry import RetryBaseT as SyncRetryBaseT
-    from tenacity.stop import StopBaseT
-    from tenacity.wait import WaitBaseT
+    from tenacity.stop import StopBaseT as SyncStopBaseT
+    from tenacity.wait import WaitBaseT as SyncWaitBaseT
 
 WrappedFnReturnT = t.TypeVar("WrappedFnReturnT")
 WrappedFn = t.TypeVar("WrappedFn", bound=t.Callable[..., t.Awaitable[t.Any]])
@@ -78,8 +94,8 @@ class AsyncRetrying(BaseRetrying):
         sleep: t.Callable[
             [int | float], t.Awaitable[None] | None
         ] = _portable_async_sleep,
-        stop: "StopBaseT" = tenacity.stop.stop_never,
-        wait: "WaitBaseT" = tenacity.wait.wait_none(),
+        stop: "SyncStopBaseT | StopBaseT" = tenacity.stop.stop_never,
+        wait: "SyncWaitBaseT | WaitBaseT" = tenacity.wait.wait_none(),
         retry: "SyncRetryBaseT | RetryBaseT" = tenacity.retry_if_exception_type(),
         before: t.Callable[
             ["RetryCallState"], t.Awaitable[None] | None
@@ -96,8 +112,8 @@ class AsyncRetrying(BaseRetrying):
     ) -> None:
         super().__init__(
             sleep=sleep,  # type: ignore[arg-type]
-            stop=stop,
-            wait=wait,
+            stop=stop,  # type: ignore[arg-type]
+            wait=wait,  # type: ignore[arg-type]
             retry=retry,  # type: ignore[arg-type]
             before=before,  # type: ignore[arg-type]
             after=after,  # type: ignore[arg-type]
@@ -247,8 +263,14 @@ class AsyncRetrying(BaseRetrying):
 __all__ = [
     "AsyncRetrying",
     "WrappedFn",
+    "async_stop_base",
+    "async_wait_base",
     "retry_all",
     "retry_any",
     "retry_if_exception",
     "retry_if_result",
+    "stop_all",
+    "stop_any",
+    "wait_chain",
+    "wait_combine",
 ]
